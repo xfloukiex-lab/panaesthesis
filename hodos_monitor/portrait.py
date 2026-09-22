@@ -200,14 +200,20 @@ def _caption_text(m, weights_basename, note=None):
     n_pair = prov.get("n_pair", 64)
     sha = prov.get("weights_sha256", "")
     sha_s = f"sha256 {sha[:12]}…" if sha else "no stored weights"
+    # A reader-demo / regime run keeps the caption verbatim; a connected dataset with
+    # no planted caps gets a caption in its own terms, not the reader's.
+    if str(stim).startswith("reader") or m.get("acc_clean") is not None:
+        last = (f"Caps mark the INPUT (planted). acc clean {_fmt(m.get('acc_clean'))} "
+                f"→ degraded {_fmt(m.get('acc_degraded'))}; "
+                f"z strain {_fmt(m.get('z_mean_strain'))} vs coast {_fmt(m.get('z_mean_coast'))}.")
+    else:
+        last = "Every tapped part tracked over the connected data; nulls reported as loudly as positives."
     return (f"{prov.get('model_name', weights_basename)}: {n_params_s} {model_kind} "
             f"(weights: {weights_basename};\n"
             f"{sha_s}; stimulus {stim}, seed {seed}).\n"
             f"Taps: {early_s} vs {late_s}. "
             f"Joint: {n_pair} paired obs/step, 12×12, 8-shuffle null.\n"
-            f"Caps mark the INPUT (planted). acc clean {_fmt(m.get('acc_clean'))} "
-            f"→ degraded {_fmt(m.get('acc_degraded'))}; "
-            f"z strain {_fmt(m.get('z_mean_strain'))} vs coast {_fmt(m.get('z_mean_coast'))}."
+            f"{last}"
             + (f"\n{note}" if note else ""))
 
 
@@ -244,10 +250,16 @@ def _draw_panels(fig, gs, m, P, Q, gap, eps, nullm, z, tau, weights_basename,
     ax1 = fig.add_subplot(gs[1], sharex=ax0)
     ax2 = fig.add_subplot(gs[2], sharex=ax0)
 
-    fig.suptitle("Hodos \u2014 What an AI Looks Like While It Reads",
-                 fontsize=17, weight="bold", y=0.985)
-    fig.text(0.5, 0.945, "Two layers, one mind: Time (left\u2192right) \u00d7 Activation (bottom\u2192top)",
-             ha="center", fontsize=11)
+    _is_reader = str(prov.get("stimulus", "")).startswith("reader")
+    _mname = prov.get("model_name", weights_basename)
+    if _is_reader:
+        _title = "Hodos \u2014 What an AI Looks Like While It Reads"
+        _sub = "Two layers, one mind: Time (left\u2192right) \u00d7 Activation (bottom\u2192top)"
+    else:
+        _title = f"Panaesthesis \u2014 {_mname}: a relational portrait"
+        _sub = "Two tracked parts: Time (left\u2192right) \u00d7 activity (bottom\u2192top)"
+    fig.suptitle(_title, fontsize=17, weight="bold", y=0.985)
+    fig.text(0.5, 0.945, _sub, ha="center", fontsize=11)
 
     tt = np.arange(T)
     # ---- top panel: the portrait
@@ -307,7 +319,8 @@ def _draw_panels(fig, gs, m, P, Q, gap, eps, nullm, z, tau, weights_basename,
     ax0.set_xlim(0, T)
 
     # ---- middle panel: Diastema gap over time
-    ax1.set_title("How Far Apart Are the Layers Over Time", fontsize=12, pad=6)
+    ax1.set_title("How Far Apart Are the Layers Over Time" if _is_reader
+                  else "How Far Apart Are the Parts Over Time", fontsize=12, pad=6)
     ax1.fill_between(tt, gap, color="#f5a623", alpha=0.85, linewidth=0)
     ax1.plot(tt, gap, color="#b45309", lw=1.2)
     ax1.set_ylabel("Gap cost g(p,q)")
@@ -315,7 +328,8 @@ def _draw_panels(fig, gs, m, P, Q, gap, eps, nullm, z, tau, weights_basename,
              transform=ax1.transAxes, ha="right", fontsize=9, color="#92400e")
 
     # ---- bottom panel: Symploke epsilon(t) + Chronos tau
-    ax2.set_title("Do the Layers Come Together Under Strain", fontsize=12, pad=6)
+    ax2.set_title("Do the Layers Come Together Under Strain" if _is_reader
+                  else "Do the Parts Come Together Under Strain", fontsize=12, pad=6)
     ax2.fill_between(tt, eps, color="#8e44ad", alpha=0.45, linewidth=0)
     ax2.plot(tt, eps, color="#6c3483", lw=1.4, label="\u03b5(t)")
     ax2.plot(tt, nullm, color="gray", ls="--", lw=1, label="null")
@@ -332,8 +346,9 @@ def _draw_panels(fig, gs, m, P, Q, gap, eps, nullm, z, tau, weights_basename,
         ax2b.annotate(arrow_txt, xy=(tt[-1], tau[-1]), xytext=(-70, 12),
                       textcoords="offset points", fontsize=9, color="#7d6608",
                       arrowprops=dict(arrowstyle="->", color="#7d6608"))
-    ax2.set_xlabel("Time (glyphs read)")
-    ax2.set_xticks([0, 20, 40, 60, 80, 100, 120])
+    ax2.set_xlabel("Time (glyphs read)" if _is_reader else "Time (steps)")
+    if _is_reader:
+        ax2.set_xticks([0, 20, 40, 60, 80, 100, 120])
     ax2.set_xlim(0, T)
 
 

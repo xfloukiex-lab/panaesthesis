@@ -85,7 +85,20 @@ def run_model(model, stimulus, seed, out_dir, taps=None, n_pair=64):
 
     P, Q = equations.layer_distributions(early, late)
     D_total, gap = equations.diastema(P, Q)
-    eps, nullm, nulls, z = equations.symploke(early, late, rng, n_pair=n_pair)
+    # ⛔ CLAMP THE PAIRING COUNT TO THE NARROWEST TAP — `field.symploke_matrix` has always done
+    # this (`npair = min(n_pair, min(widths))`) and the portrait did not, so a system whose parts
+    # are narrower than the default 64 died with
+    #     ValueError: symploke needs at least n_pair=64 late units, got 12
+    # A network's late layer is wide; a connected system's part can be 12 sensors. The default
+    # was a NETWORK-shaped assumption in a domain-free surface. The effective value is reported
+    # in metrics rather than silently substituted.
+    n_pair_eff = int(min(int(n_pair), int(early.reshape(len(early), -1).shape[1]),
+                         int(late.reshape(len(late), -1).shape[1])))
+    if n_pair_eff < 2:
+        raise SystemExit(
+            f"the narrowest tracked part is {n_pair_eff} wide — a relation needs at least 2. "
+            f"Connect parts that carry a profile (>=2 values each).")
+    eps, nullm, nulls, z = equations.symploke(early, late, rng, n_pair=n_pair_eff)
     excess, z_arrow, Phi, tau = equations.chronos(eps, nullm)
     if strain_idx is not None and coast_idx is not None:
         ver = equations.verify(z, gap, tau, strain_idx, coast_idx)
@@ -271,8 +284,21 @@ def _draw_panels(fig, gs, m, P, Q, gap, eps, nullm, z, tau, weights_basename,
     ax0.set_ylabel("Activation (quantile bin)")
 
     def smooth(x, w=5):
+        """Moving average that never outruns the signal.
+
+        ⛔ `np.convolve(x, k, mode="same")` returns max(len(x), len(k)) — NOT len(x) — so a
+        fixed 5-wide kernel on a 2-step run returned 5 points against 2 timestamps and the
+        portrait died with `x and y must have same first dimension`. That is a NETWORK
+        assumption in a domain-free surface: a net runs hundreds of steps, a connected dataset
+        can carry 2. The window is now clamped to the run's own length.
+        """
+        x = np.asarray(x, dtype=float)
+        n = len(x)
+        if n < 2:
+            return x
+        w = max(1, min(int(w), n))
         k = np.ones(w) / w
-        return np.convolve(x, k, mode="same")
+        return np.convolve(x, k, mode="same")[:n]
 
     binpos = np.arange(NB)                          # y-axis is bin index: plot expected bin
     modeA = smooth((P * binpos).sum(axis=1))        # early-layer activation centroid
@@ -295,9 +321,18 @@ def _draw_panels(fig, gs, m, P, Q, gap, eps, nullm, z, tau, weights_basename,
     # Section caps: the INPUT regimes (planted, ground truth of the demo) —
     # labeled as input, because the computed braid may NOT follow them.
     if sections is None:
-        sections = [(0.0, float(HARD_START), "CLEAN INPUT", "#22d3ee"),
-                    (float(HARD_START), float(HARD_END), "DEGRADED INPUT", "#ef4444"),
-                    (float(HARD_END), float(T), "CLEAN INPUT", "#22d3ee")]
+        if _is_reader and T >= HARD_END:
+            sections = [(0.0, float(HARD_START), "CLEAN INPUT", "#22d3ee"),
+                        (float(HARD_START), float(HARD_END), "DEGRADED INPUT", "#ef4444"),
+                        (float(HARD_END), float(T), "CLEAN INPUT", "#22d3ee")]
+        else:
+            # ⛔ The clean/degraded caps belong to the READER protocol, whose regimes are
+            # planted in its stimulus. Painting them onto a connected dataset that declares
+            # none puts a label on the portrait's face that the data does not support — and the
+            # portrait is the artefact a user reads. Section caps are only ever planted input
+            # regimes, so inventing them contradicts the instrument's own honesty layer.
+            # No regimes declared => no caps drawn.
+            sections = []
     for (t0, t1, label, color) in sections:
         ax0.text((t0 + t1) / 2, NB * 0.88, label, color=color, fontsize=11, weight="bold",
                  ha="center", va="center", zorder=5)

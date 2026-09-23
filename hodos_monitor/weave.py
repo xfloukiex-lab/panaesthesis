@@ -704,10 +704,21 @@ def _render_spliced(out_path, m, P, Q, gap, eps_b, eps_a, nullm_a, z_a, tau,
 
     taps = prov.get("taps", {})
     stim = prov.get("stimulus_stimulus", prov.get("stimulus", "?"))
+    # ⛔ SAME DEFECT AS `taps`, SECOND SITE: this formatted `n_params` with a thousands
+    # separator, and a CONNECTED SYSTEM has no parameters — `ValueError: Cannot specify ','
+    # with 's'` on every splice over a dataset. Size is now stated in whatever terms the
+    # connected thing actually has.
+    _np = prov.get("n_params")
+    if isinstance(_np, (int, float)) and not isinstance(_np, bool):
+        _size = f"{int(_np):,}-param"
+    elif prov.get("n_obs") is not None and prov.get("n_parts") is not None:
+        _size = f"{int(prov['n_obs'])} observations x {int(prov['n_parts'])} parts"
+    else:
+        _size = "size not reported"
     ax0.text(0.02, 0.04,
              f"{prov.get('model_name', model_basename)} "
              f"({prov.get('model_kind', '?')}; "
-             f"{prov.get('n_params', '?'):,}-param\n"
+             f"{_size}\n"
              f"stimulus {stim}, seed {prov.get('seed', '?')}).\n"
              f"Taps: {taps.get('early', '?')} vs {taps.get('late', '?')} "
              f"(n_pair={sp.get('n_pair', '?')}).\n"

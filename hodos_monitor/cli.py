@@ -41,6 +41,25 @@ def _fmt(v, prec=3):
     return f"{v:.{prec}f}"
 
 
+def _size_of(desc):
+    """How big is the connected system, in ITS OWN terms.
+
+    Panaesthesis is for ANY system with internal relations, not only neural networks — so the
+    surface must not assume network vocabulary. A net has parameters; a connected dataset has
+    observations x parts x profile and no parameters at all. Formatting a missing count with a
+    thousands separator crashed `taps` on every connected dataset (`ValueError: Cannot specify
+    ',' with 's'`), i.e. the one command whose job is to show what was tapped was unusable for
+    the bring-your-own-data connector.
+    """
+    n = desc.get("n_params")
+    if isinstance(n, (int, float)) and not isinstance(n, bool):
+        return f"{int(n):,} params"
+    if desc.get("n_obs") is not None and desc.get("n_parts") is not None:
+        return (f"{int(desc['n_obs']):,} observations x "
+                f"{int(desc['n_parts']):,} parts")
+    return "size not reported by this adapter"
+
+
 def _resolve_model(a):
     if a.model:
         return a.model
@@ -233,7 +252,24 @@ def _cmd_family(a):
     stim = (stimuli.load_stimulus(a.stimulus, seed=a.master_seed)
             if isinstance(a.stimulus, str) else a.stimulus)
     acts, _preds, _ys = field.collect_acts(model, stim, keep)
-    fams, left_out = family.build_families(list(acts.keys()), a.families)
+    try:
+        fams, left_out = family.build_families(list(acts.keys()), a.families)
+    except ValueError as e:
+        # `auto` groups by LAYER INDEX — a network idea. A connected dataset's parts have no
+        # layer, so auto can never apply to one. Refusing to guess is CORRECT (an arbitrary
+        # grouping measures the grouping, not a relation), but dying with a traceback tells a
+        # user nothing. Name the families for them instead.
+        names = [t for t in acts.keys()]
+        ex = ";".join(f"g{i}=" + ",".join(names[i::3]) for i in range(min(3, len(names))))
+        raise SystemExit(
+            f"{e}\n\n"
+            f"'auto' groups by layer index, which only a layered model has. This system has "
+            f"{len(names)} parts and no layers, so the families have to be named — the "
+            f"grouping is a choice about the system, and guessing it would measure the "
+            f"guess.\n\n"
+            f"  --families \"{ex[:300]}\"\n\n"
+            f"Any grouping that means something for your system will do; every part may "
+            f"appear once.")
     rng = np.random.default_rng(a.master_seed)
     m = family.run_auto(acts, fams, rng, out, hist_path=a.hist,
                         n_pair=a.n_pair, pool=a.pool, seed=a.master_seed)
@@ -299,7 +335,7 @@ def _cmd_taps(a):
             continue
         by_class.setdefault(sites.classify(t), []).append(t)
     desc = model.describe()
-    print(f"{desc.get('model_name','model')}: {desc.get('n_params','?'):,} params, "
+    print(f"{desc.get('model_name','model')}: {_size_of(desc)}, "
           f"{len(names)} taps (all_sites={desc.get('all_sites', False)})")
     if desc.get("attn_config"):
         nh, nkv, hd = desc["attn_config"]

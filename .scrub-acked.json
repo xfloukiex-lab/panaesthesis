@@ -1,0 +1,7 @@
+{
+  "quotes": {
+    "\" -> override the module output; \"": "technical docstring describing the overrides API, not conversation (pre-existing)",
+    "\" (vendored-build arch dict), \"": "technical docstring naming an arch-spec form, not conversation (pre-existing)",
+    "\" (Llama/Qwen/Mistral) or \"": "technical docstring naming model families, not conversation (pre-existing)"
+  }
+}

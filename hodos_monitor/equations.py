@@ -125,6 +125,17 @@ def symploke(early, late, rng, nj=NJ, k=K_SHUFFLE, n_pair=N_PAIR):
     n_pair must be <= the late width; otherwise the pairing is undefined
     and this raises instead of guessing.
     Returns (eps, null_mean, null_std, z).
+
+    Degenerate-null guard (2026-09-24): z divides by the null spread. When
+    the k shuffles have no spread relative to the data scale (few genuine
+    paired observations, e.g. small n_pair), the old fixed 1e-12 floor took
+    over and z exploded (measured mean +6.5e8 at n_pair=4). A null with no
+    spread makes z UNDEFINED, not large: such steps report z = 0.0 and are
+    marked with null_std = 0.0 EXACTLY. That value is impossible under the
+    old code (null_std was always >= 1e-12), so (null_std == 0.0) is the
+    degenerate-step sentinel — the 4-tuple return signature is unchanged.
+    v1 runs are bit-identical: the guard only fires where the old output
+    was already garbage.
     """
     T = early.shape[0]
     if late.shape[1] < n_pair:
@@ -142,6 +153,7 @@ def symploke(early, late, rng, nj=NJ, k=K_SHUFFLE, n_pair=N_PAIR):
     eps = np.zeros(T)
     nullm = np.zeros(T)
     nulls = np.zeros(T)
+    z = np.zeros(T)
     for t in range(T):
         ia = np.clip(np.digitize(A[t], eE) - 1, 0, nj - 1)
         ib = np.clip(np.digitize(B[t], eL) - 1, 0, nj - 1)
@@ -158,8 +170,15 @@ def symploke(early, late, rng, nj=NJ, k=K_SHUFFLE, n_pair=N_PAIR):
             J2 /= J2.sum()
             ns.append(gcost(J2.ravel(), M.ravel()))
         nullm[t] = np.mean(ns)
-        nulls[t] = np.std(ns) + 1e-12
-    z = (eps - nullm) / nulls
+        nstd = np.std(ns)
+        nscale = abs(nullm[t]) + abs(eps[t]) + 1e-300
+        if nstd < 1e-9 * nscale:
+            # Degenerate null: z undefined. See docstring.
+            nulls[t] = 0.0
+            z[t] = 0.0
+        else:
+            nulls[t] = nstd + 1e-12
+            z[t] = (eps[t] - nullm[t]) / nulls[t]
     return eps, nullm, nulls, z
 
 

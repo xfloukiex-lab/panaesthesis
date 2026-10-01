@@ -110,17 +110,24 @@ def symploke_matrix(acts, taps, seed, n_pair=N_PAIR, nj=NJ, k=K_SHUFFLE):
     N = len(taps)
     A = {t: _flat(acts[t]) for t in taps}
     Z = np.zeros((N, N))
+    n_degen = 0
     for i in range(N):
         for j in range(N):
             if i == j:
                 continue
             rng = np.random.default_rng((seed & 0xFFFFFFFF) ^ (i * 2654435761)
                                         ^ (j * 40503))
-            _, _, _, z = symploke(A[taps[i]], A[taps[j]], rng,
-                                  nj=nj, k=k, n_pair=npair)
+            _, _, nulls, z = symploke(A[taps[i]], A[taps[j]], rng,
+                                     nj=nj, k=k, n_pair=npair)
+            # null_std == 0.0 exactly is the degenerate-null sentinel (see
+            # equations.symploke): the z there is undefined, reported as 0.
+            if (nulls == 0.0).any():
+                n_degen += 1
             Z[i, j] = float(np.mean(z))
     meta = {"n_pair_effective": npair, "n_pair_requested": int(n_pair),
-            "k_shuffle": int(k), "nj": int(nj)}
+            "k_shuffle": int(k), "nj": int(nj),
+            "n_degenerate_pairs": int(n_degen),
+            "n_pairs": int(N * (N - 1))}
     return Z, meta
 
 

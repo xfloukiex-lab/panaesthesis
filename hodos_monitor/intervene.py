@@ -22,6 +22,13 @@ Value-neutral by design: 'cut' decouples (random temporal re-deal -- degrade a
 relation); 'couple' imposes one toward a driver (strengthen). Both preserve each
 unit's exact value multiset -- only WHEN a unit fires changes. Better or worse is
 the operator's call, reported as measured, never forced.
+'gate' is the conditional blocker: the Hodoscope watches a trigger relation
+(--driver); when its mean activation deviates more than --gate-k standard
+deviations from the run mean, the targeted columns are suppressed at those
+steps only. Unlike cut/couple the gate does NOT preserve the targeted units'
+value multiset -- suppression is the point. Untouched columns still run
+bit-identical, the gate fires only inside the named range, and removing it
+restores the natural run bit-identically.
 
 Level coverage (this build): head (q/k/v role), family / layer (all of a layer's
 q/k/v heads), module (any hooked submodule output), class (every module whose
@@ -59,6 +66,11 @@ HONESTY = [
     "'nothing there' (separability rule).",
     "Behavior holding while the field reorganizes is the degeneracy result, not "
     "'the change did nothing' -- it is reported explicitly.",
+    "The gate ('gate' op) does NOT preserve the targeted units' value multiset "
+    "-- at fired steps the targeted columns are suppressed toward zero. It is "
+    "a conditional, gross intervention by design: the trigger is evaluated on "
+    "the natural pass (open loop), so a gate with n_fired == 0 changed "
+    "nothing -- check change.gate before reading anything into the result.",
 ]
 
 
@@ -214,6 +226,53 @@ def _redeal_columns(nat_flat, cols, ridx, op, alpha, driver_series, rng):
     return spl
 
 
+def _gate_columns(nat_flat, cols, fire_idx, alpha):
+    """Blocker: suppress `cols` toward zero at the fired steps.
+
+    Unlike _redeal_columns this does NOT preserve the targeted units' value
+    multiset -- suppression is the point. Untouched columns are never touched.
+    alpha blends: at alpha=1 the fired steps read exactly zero on `cols`.
+    """
+    gated = nat_flat.copy()
+    fire_idx = np.asarray(fire_idx, dtype=np.int64)
+    cols = np.asarray(cols, dtype=np.int64)
+    if fire_idx.size and cols.size:
+        gated[np.ix_(fire_idx, cols)] = ((1.0 - alpha)
+                                         * nat_flat[np.ix_(fire_idx, cols)])
+    return gated
+
+
+def _concat_src_flat(step_vals):
+    """Rebuild a z-head / concat source as (flat, natshape), layout-preserving.
+
+    `step_vals` is a list over T steps; each element is that step's per-head
+    arrays (each shaped (..., head_dim)) in true module order. The heads are
+    concatenated along the LAST axis FIRST and only THEN flattened, so that
+    flat[t].reshape(natshape) round-trips bit-exactly at ANY sequence length --
+    not only at S=1. The old per-head ravel-then-concat permuted sequence
+    positions across heads; S=1 happened to round-trip, which hid it in the
+    S=1-only toy suite (confirmed + reproduced 2026-10-01).
+    """
+    per_step = [np.concatenate([np.asarray(a) for a in heads], axis=-1)
+                for heads in step_vals]
+    flat = np.stack([p.reshape(-1) for p in per_step])
+    return flat, per_step[0].shape
+
+
+def _concat_head_cols(base_cols, natshape):
+    """Tile a head-dim slice of the LAST axis across every leading position.
+
+    `_concat_src_flat` produces flat of width prod(leading) * D (D = natshape[-1]),
+    so a z-head's within-D column slice repeats once per (batch, seq) position.
+    Tiling it there suppresses / re-deals head h at EVERY position, not only the
+    first -- the companion to the layout-preserving rebuild (2026-10-01).
+    """
+    D = int(natshape[-1])
+    lead = int(np.prod(natshape[:-1])) if len(natshape) > 1 else 1
+    base = np.asarray(base_cols, dtype=np.int64)
+    return np.concatenate([p * D + base for p in range(lead)]).astype(np.int64)
+
+
 def _acc(preds, ys, mask):
     if mask is None or not mask.any():
         return None
@@ -259,6 +318,16 @@ def _reading(behavior, field_delta, field_before, field_after, alpha):
     """
     if alpha == 0.0:
         return "alpha=0: natural run, no change applied."
+    # Degenerate-Symploke guard (2026-09-24): the portrait reports degenerate
+    # readings instead of forcing them, and the verdict must do the same.
+    # When the z-field came from degenerate nulls, no field/behavior claim
+    # is licensed — whatever the relative movement says. Report, never force.
+    for _fld in (field_before, field_after):
+        _zm = (_fld or {}).get("symploke_meta") or {}
+        if _zm.get("n_degenerate_pairs", 0):
+            return (f"Symploke null degenerate on {_zm['n_degenerate_pairs']} "
+                    f"of {_zm.get('n_pairs', '?')} pairs "
+                    "-- BELOW THIS INSTRUMENT'S RESOLUTION, not 'nothing there'.")
     acc_moved = False
     for k in ("acc_clean", "acc_degraded"):
         b, a = behavior[f"{k}_before"], behavior[f"{k}_after"]
@@ -287,7 +356,7 @@ def _reading(behavior, field_delta, field_before, field_after, alpha):
 
 def intervene_run(model, stimulus, level, select, op="cut", driver=None,
                   alpha=1.0, splice_range=None, seed=20260918, out_dir=".",
-                  site_class="head", max_taps=48, n_pair=64):
+                  site_class="head", max_taps=48, n_pair=64, gate_k=2.0):
     """Change relations at `level`/`select`, watching the whole field before/after.
 
     Returns the metrics dict (also written to out_dir/intervene_metrics.json)
@@ -298,6 +367,11 @@ def intervene_run(model, stimulus, level, select, op="cut", driver=None,
     if op == "couple" and not driver:
         raise SystemExit("--op couple needs --driver <tap name> (the relation "
                          "to impose toward)")
+    if op == "gate" and not driver:
+        raise SystemExit("--op gate needs --driver <tap name> (the trigger "
+                         "relation the Hodoscope watches for the block)")
+    if op not in ("cut", "couple", "gate"):
+        raise SystemExit(f"--op must be one of cut, couple, gate; got {op!r}")
     model = _load(model)
     if isinstance(stimulus, str):
         stimulus = stimuli.load_stimulus(stimulus, seed=seed)
@@ -362,14 +436,27 @@ def intervene_run(model, stimulus, level, select, op="cut", driver=None,
             flat = np.stack([a.ravel() for a in cap[ref]])
             natshape = np.asarray(cap[ref][0]).shape
         else:  # concat several taps along the last axis, per step (z-heads)
-            flat = np.stack([np.concatenate([np.asarray(cap[r][i]).ravel()
-                                             for r in ref]) for i in range(T)])
-            natshape = np.concatenate([np.asarray(cap[r][0]) for r in ref],
-                                      axis=-1).shape
+            flat, natshape = _concat_src_flat(
+                [[cap[r][i] for r in ref] for i in range(T)])
         return flat, natshape
 
     # ---- build the changed per-step overrides for each target ----
     driver_series = np.asarray(drv_seq)[ridx] if driver else None
+    gate_info, fire_idx = None, None
+    if op == "gate":
+        # Trigger evaluated on the NATURAL pass (open loop): the Hodoscope
+        # watches the driver's mean-activation series; the gate fires at range
+        # steps where it deviates more than gate_k std from the run mean.
+        ds = np.asarray(drv_seq, dtype=float)
+        mu, sd = float(ds.mean()), float(ds.std())
+        if sd > 0:
+            fire_idx = ridx[np.abs(ds[ridx] - mu) > float(gate_k) * sd]
+        else:
+            fire_idx = np.array([], dtype=np.int64)
+        gate_info = {"driver": driver, "k": float(gate_k),
+                     "driver_mean": mu, "driver_std": sd,
+                     "fired_steps": [int(tt) for tt in fire_idx],
+                     "n_fired": int(len(fire_idx))}
     rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
     n_units = 0
     overrides_by_step = {int(t): {} for t in ridx}
@@ -377,11 +464,21 @@ def intervene_run(model, stimulus, level, select, op="cut", driver=None,
     for tg in targets:
         flat, natshape = _src_full(tg)
         W = flat.shape[1]
-        cols = np.arange(W) if tg["cols"] is None else np.asarray(tg["cols"])
+        if tg["cols"] is None:
+            cols = np.arange(W)
+        elif tg["src"][0] == "concat":
+            cols = _concat_head_cols(tg["cols"], natshape)
+        else:
+            cols = np.asarray(tg["cols"])
         cols = cols[(cols >= 0) & (cols < W)]
         n_units += len(cols)
-        spl = (_redeal_columns(flat, cols, ridx, op, alpha, driver_series, rng)
-               if (alpha > 0.0 and len(cols)) else flat)
+        if op == "gate":
+            spl = (_gate_columns(flat, cols, fire_idx, alpha)
+                   if (alpha > 0.0 and len(cols)) else flat)
+        else:
+            spl = (_redeal_columns(flat, cols, ridx, op, alpha, driver_series,
+                                   rng)
+                   if (alpha > 0.0 and len(cols)) else flat)
         untouched = np.setdiff1d(np.arange(W), cols)
         if untouched.size and not np.array_equal(spl[:, untouched],
                                                  flat[:, untouched]):
@@ -439,12 +536,15 @@ def intervene_run(model, stimulus, level, select, op="cut", driver=None,
                          "label": t["label"]} for t in targets],
             "n_targeted_units": int(n_units),
             "untouched_bit_identical": bool(injection_ok),
+            "gate": gate_info,
             "site_class_watched": site_class,
         },
         "field_before": _summ(field_before),
         "field_after": _summ(field_after),
         "field_delta": delta,
         "behavior": behavior,
+        "predictions": {"natural": [int(p) for p in preds_nat],
+                        "changed": [int(p) for p in preds_aft]},
         "honesty": HONESTY,
         "provenance": {
             **desc,

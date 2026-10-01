@@ -302,13 +302,18 @@ def _cmd_intervene(a):
         model_spec, a.stimulus, level=a.level, select=a.select, op=a.op,
         driver=a.driver, alpha=a.alpha, splice_range=(tuple(a.range)
         if a.range else None), seed=a.master_seed, out_dir=out,
-        site_class=a.site_class, max_taps=a.max_taps, n_pair=a.n_pair)
+        site_class=a.site_class, max_taps=a.max_taps, n_pair=a.n_pair,
+        gate_k=a.gate_k)
     ch = m["change"]
     print(f"intervene: op={ch['op']} level={ch['level']} select={ch['select']!r} "
           f"alpha={ch['alpha']} range={ch['range']}")
     print(f"  targeted {ch['n_targeted_units']} unit(s) across "
           f"{len(ch['targeted_taps'])} site(s); untouched sites bit-identical: "
           f"{ch['untouched_bit_identical']}")
+    if ch.get("gate"):
+        g = ch["gate"]
+        print(f"  GATE: trigger={g['driver']} k={g['k']} "
+              f"fired {g['n_fired']} step(s): {g['fired_steps']}")
     fb = m["field_before"]
     fa = m["field_after"]
     print(f"  WHOLE FIELD over {fb['n_taps']} sites — reorganization:")
@@ -503,14 +508,23 @@ def main(argv=None):
                          "…z.h1), a residual tap (layers.2.resid_pre), a module "
                          "tap, a layer index, or a module-name suffix; omit at "
                          "--level field to take all attention projections")
-    iv.add_argument("--op", default="cut", choices=["cut", "couple"],
+    iv.add_argument("--op", default="cut", choices=["cut", "couple", "gate"],
                     help="'cut' decouples (random temporal re-deal — degrade); "
                          "'couple' imposes a relation toward --driver "
-                         "(strengthen). Both preserve each unit's value "
-                         "multiset; value-neutral by design")
+                         "(strengthen); 'gate' is the conditional blocker: it "
+                         "suppresses the target when --driver deviates more "
+                         "than --gate-k std from its run mean. cut/couple "
+                         "preserve each unit's value multiset; the gate does "
+                         "not (suppression is the point)")
     iv.add_argument("--driver", default=None,
                     help="for --op couple: the tap whose rank order the target "
-                         "is coupled toward")
+                         "is coupled toward; for --op gate: the trigger "
+                         "relation the Hodoscope watches for the block")
+    iv.add_argument("--gate-k", type=float, default=2.0,
+                    help="for --op gate: fire threshold in standard deviations; "
+                         "the gate suppresses the target at range steps where "
+                         "the driver's mean activation deviates more than this "
+                         "from its run mean")
     iv.add_argument("--alpha", type=float, default=1.0,
                     help="change strength in [0,1]; 0 = natural run")
     iv.add_argument("--range", nargs=2, type=int, default=None,

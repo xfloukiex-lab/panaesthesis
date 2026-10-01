@@ -99,6 +99,9 @@ def run_model(model, stimulus, seed, out_dir, taps=None, n_pair=64):
             f"the narrowest tracked part is {n_pair_eff} wide — a relation needs at least 2. "
             f"Connect parts that carry a profile (>=2 values each).")
     eps, nullm, nulls, z = equations.symploke(early, late, rng, n_pair=n_pair_eff)
+    # null_std == 0.0 exactly is the degenerate-null sentinel (see
+    # equations.symploke): z undefined there, reported as 0.
+    n_degen_steps = int((nulls == 0.0).sum())
     excess, z_arrow, Phi, tau = equations.chronos(eps, nullm)
     if strain_idx is not None and coast_idx is not None:
         ver = equations.verify(z, gap, tau, strain_idx, coast_idx)
@@ -113,7 +116,11 @@ def run_model(model, stimulus, seed, out_dir, taps=None, n_pair=64):
                "notes": ["stimulus has no strain/coast regimes — "
                          "verification needs both"]}
         slope_strain = slope_coast = float("nan")
-
+    if n_degen_steps:
+        # Report the degenerate steps, never force a reading through them.
+        ver["notes"] = list(ver.get("notes", [])) + [
+            f"NOTE: Symploke null degenerate on {n_degen_steps} of {T} steps — "
+            "z undefined there, reported as 0, not 'no coupling'."]
     model_desc = model.describe()
     stim_desc = stimulus.describe()
     metrics = {
@@ -140,6 +147,7 @@ def run_model(model, stimulus, seed, out_dir, taps=None, n_pair=64):
         "Phi": float(Phi),
         "acc_clean": acc_clean,
         "acc_degraded": acc_degraded,
+        "n_degenerate_steps": n_degen_steps,
         "verification": ver,
         "provenance": {
             **model_desc,
@@ -148,6 +156,7 @@ def run_model(model, stimulus, seed, out_dir, taps=None, n_pair=64):
             "taps": {"early": early_tap, "late": late_tap,
                      "output": out_tap},
             "n_pair": int(n_pair),
+            "n_pair_effective": int(n_pair_eff),
             "seed": str(seed),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },

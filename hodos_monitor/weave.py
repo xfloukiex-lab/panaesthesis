@@ -118,7 +118,13 @@ def pair_coupling(a, b, rng, nj=12, k=8):
         J2 /= J2.sum()
         ns.append(equations.gcost(J2.ravel(), M.ravel()))
     nullm = float(np.mean(ns))
-    nulls = float(np.std(ns)) + 1e-12
+    nstd = float(np.std(ns))
+    nscale = abs(nullm) + abs(eps) + 1e-300
+    if nstd < 1e-9 * nscale:
+        # Degenerate null (2026-09-24): z undefined — report 0, not an
+        # exploded value. Same guard as equations.symploke.
+        return float(eps), 0.0
+    nulls = nstd + 1e-12
     return float(eps), float((eps - nullm) / nulls)
 
 

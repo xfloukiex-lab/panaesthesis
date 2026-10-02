@@ -21,8 +21,14 @@ TREND_KEYS = [
 
 
 def regenerate(rows, out_dir):
-    """rows: list of history row dicts in checkpoint order. Writes TRENDS.md + trends.png."""
+    """rows: list of history row dicts in checkpoint order. Writes TRENDS.md + trends.png.
+
+    Only monitor-history rows (what `portrait`/`watch` write) carry the metrics this
+    renders. A foreign history — a `family --hist` band-trigger log, or a dataset row
+    from watching bring-your-own-data — has a different shape; those rows are skipped
+    here rather than crashing on a missing key."""
     out_dir = Path(out_dir)
+    rows = [r for r in rows if isinstance(r, dict) and "metrics_mean" in r]
     _write_md(rows, out_dir / "TRENDS.md")
     _write_png(rows, out_dir / "trends.png")
 
@@ -34,7 +40,9 @@ def _write_md(rows, path):
              "checkpoint's stimulus replicates. Section caps in each portrait mark "
              "the INPUT regimes (planted); the braid is computed, never forced.\n")
     if not rows:
-        L.append("_No checkpoints yet._\n")
+        L.append("_No monitor-history checkpoints to chart._ `compare` reads the history "
+                 "that `portrait`/`watch` write; other logs (a `family --hist` band-trigger "
+                 "file, or dataset rows from `watch`) carry no checkpoint metrics.\n")
     else:
         L.append("| # | checkpoint | arch | D | z strain | z coast | "
                  "tau slope strain | tau slope coast | acc clean | acc degraded | verification |")
@@ -42,7 +50,7 @@ def _write_md(rows, path):
                  "|--------------|")
         for i, r in enumerate(rows):
             m = r["metrics_mean"]
-            ver = r["verification_any_flagged"]
+            ver = r.get("verification_any_flagged")
             L.append(
                 f"| {i} | {r['checkpoint']} | {r['arch_name']} | "
                 f"{m['D_total']:.4f} | {m['z_mean_strain']:.3f} | {m['z_mean_coast']:.3f} | "

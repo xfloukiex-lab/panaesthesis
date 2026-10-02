@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from hodos_monitor import compare, portrait, stimuli
+from hodos_monitor import compare, field, portrait, stimuli
 
 DEFAULT_MASTER_SEED = 20260918
 MEAN_KEYS = [
@@ -39,6 +39,43 @@ def _read_history(hist_path):
                 if line:
                     rows.append(json.loads(line))
     return rows
+
+
+def _npz_kind(path):
+    """A model checkpoint carries L{ii}_{Class}_W weight keys; a bring-your-own-data
+    table carries 'values'/'inputs'. Mirror runspec.spec_for_file so watch can open
+    either through the same front door instead of rejecting a dataset."""
+    try:
+        import numpy as np
+        with np.load(str(path), allow_pickle=True) as d:
+            files = list(d.files)
+    except Exception:
+        files = []
+    if any(k.endswith("_W") for k in files):
+        return "model"
+    if "values" in files or "inputs" in files:
+        return "data"
+    return "model"
+
+
+def _data_row(src_path, fld, master_seed):
+    """A history row for a watched DATASET (not a model checkpoint). Deliberately a
+    different shape from _aggregate_row — it has no model metrics — and is skipped by
+    the model-trend/flag logic, which keys on 'metrics_mean'."""
+    return {
+        "checkpoint": Path(src_path).stem,
+        "weights_path": str(src_path),
+        "kind": "data",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "master_seed": str(master_seed),
+        "n_taps": fld.get("n_taps"),
+        "field": {
+            "D_offdiag_mean": fld.get("D_offdiag_mean"),
+            "D_offdiag_max": fld.get("D_offdiag_max"),
+            "z_field_mean": fld.get("z_field_mean"),
+            "z_field_max": fld.get("z_field_max"),
+        },
+    }
 
 
 def _aggregate_row(weights_path, rep_metrics, master_seed, replicates):
@@ -63,6 +100,9 @@ def _aggregate_row(weights_path, rep_metrics, master_seed, replicates):
 
 def evaluate_flags(rows):
     """Flag rules. Returns a list of flag dicts for the newest checkpoint."""
+    # Only model-portrait rows carry the metrics these rules read; dataset rows
+    # (from watching bring-your-own-data) are a different shape and are skipped.
+    rows = [r for r in rows if isinstance(r, dict) and "metrics_mean" in r]
     flags = []
     if not rows:
         return flags
@@ -140,6 +180,21 @@ def watch(incoming_dir, out_dir, every_s=600, once=False, replicates=3,
         for weights_path in new_files:
             ckpt_dir = out_dir / "checkpoints" / weights_path.stem
             try:
+                if _npz_kind(weights_path) == "data":
+                    # bring-your-own-data: run the relational field over the dataset
+                    # (what `field --model data:` does) instead of rejecting it.
+                    fld = field.run_field(f"data:{weights_path}",
+                                          f"array:{weights_path}", master_seed, ckpt_dir)
+                    row = _data_row(weights_path, fld, master_seed)
+                    with open(hist_path, "a") as f:
+                        f.write(json.dumps(row) + "\n")
+                    state["processed"][weights_path.name] = {
+                        "kind": "data", "at": row["timestamp"]}
+                    state_path.write_text(json.dumps(state, indent=1))
+                    print(f"dataset recorded: {weights_path.stem} — relational field over "
+                          f"{row.get('n_taps')} parts "
+                          f"(D_offdiag_mean={row['field']['D_offdiag_mean']})", flush=True)
+                    continue
                 rep_metrics = []
                 for r in range(replicates):
                     seed = stimuli.replicate_seed(master_seed, r)

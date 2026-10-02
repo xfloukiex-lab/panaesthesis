@@ -23,6 +23,7 @@ Stimulus specs (--stimulus):
 """
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from hodos_monitor import (compare, family, field, intervene, live, monitor,
@@ -44,12 +45,13 @@ def _fmt(v, prec=3):
 def _size_of(desc):
     """How big is the connected system, in ITS OWN terms.
 
-    Panaesthesis is for ANY system with internal relations, not only neural networks — so the
-    surface must not assume network vocabulary. A net has parameters; a connected dataset has
-    observations x parts x profile and no parameters at all. Formatting a missing count with a
-    thousands separator crashed `taps` on every connected dataset (`ValueError: Cannot specify
-    ',' with 's'`), i.e. the one command whose job is to show what was tapped was unusable for
-    the bring-your-own-data connector.
+    Panaesthesis is for ANY system with internal relations, not only neural
+    networks — so the surface must not assume network vocabulary. A net has
+    parameters; a connected dataset has observations x parts x profile and no
+    parameters at all. Formatting a missing count with a thousands separator
+    crashed `taps` on every connected dataset (`ValueError: Cannot specify ','
+    with 's'`), i.e. the one command whose job is to show what was tapped was
+    unusable for the bring-your-own-data connector.
     """
     n = desc.get("n_params")
     if isinstance(n, (int, float)) and not isinstance(n, bool):
@@ -297,6 +299,25 @@ def _cmd_intervene(a):
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     model_spec = _resolve_model(a)
+    if a.op == "gate" and getattr(a, "live", False):
+        m = intervene.live_gate_run(
+            model_spec, a.stimulus, level=a.level, select=a.select,
+            driver=a.driver, gate_k=a.gate_k, alpha=a.alpha,
+            splice_range=(tuple(a.range) if a.range else None),
+            seed=a.master_seed, out_dir=out, site_class=a.site_class,
+            max_taps=a.max_taps, n_pair=a.n_pair)
+        g = m["change"]["gate"]
+        print(f"LIVE gate: trigger={g['driver']} target={g['target']} k={g['k']}")
+        print(f"  blocked in-pass at {g['n_fired']} step(s): {g['fired_steps']}")
+        print(f"  {m['behavior']['n_flips']} prediction flip(s): "
+              f"{m['behavior']['flips']}")
+        print(f"  whole-field relations moved: z_pair_max_abs "
+              f"{_fmt(m['field_delta']['z_pair_max_abs'])} at "
+              f"{m['field_delta']['z_pair_max_at']}")
+        print(f"  {m['behavior']['reading']}")
+        print(f"wrote {out}/intervene_metrics.json + field_before.png + "
+              f"field_after.png")
+        return
     ops = intervene.parse_target(a.level, a.select)
     m = intervene.intervene_run(
         model_spec, a.stimulus, level=a.level, select=a.select, op=a.op,
@@ -328,6 +349,54 @@ def _cmd_intervene(a):
           f"acc_degraded {_fmt(b['acc_degraded_before'])} -> {_fmt(b['acc_degraded_after'])}")
     print(f"    {b['reading']}")
     print(f"wrote {out}/intervene_metrics.json + field_before.png + field_after.png")
+
+
+def _cmd_guardrail(a):
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    model_spec = _resolve_model(a)
+    if getattr(a, "generate", False) or a.prompt or a.block_text:
+        from hodos_monitor.adapters import load_model
+        ad = load_model(model_spec)
+        if not hasattr(ad, "encode"):
+            raise SystemExit("--generate needs a model carrying a tokenizer "
+                             "(use an hf:<model_id> spec)")
+        prompt_ids = ad.encode(a.prompt)
+        block = {int(b) for b in str(a.block).split(",") if b.strip() != ""}
+        for phrase in str(a.block_text).split(","):
+            p = phrase.strip()
+            if p:
+                block.update(ad.encode(p))
+                block.update(ad.encode(" " + p))  # the mid-sentence form too
+        r = intervene.guardrail_generate(ad, prompt_ids, sorted(block),
+                                         n_steps=a.n_steps)
+        nat = ad.decode(r["prompt_ids"] + r["natural_ids"])
+        gd = ad.decode(r["prompt_ids"] + r["guarded_ids"])
+        try:
+            ad.close()
+        except Exception:
+            pass
+        (out / "guardrail_generate.json").write_text(json.dumps({
+            "prompt": a.prompt, "block_text": a.block_text,
+            "block_ids": r["block"], "natural_text": nat, "guarded_text": gd,
+            "prevented_steps": r["prevented_steps"],
+            "n_prevented": r["n_prevented"], "reliable": r["reliable"]},
+            indent=1), encoding="utf-8")
+        print("NATURAL:", repr(nat))
+        print("GUARDED:", repr(gd))
+        print(f"  guardrail prevented {r['n_prevented']} step(s): "
+              f"{r['prevented_steps']}; reliable: {r['reliable']}")
+        print(f"wrote {out}/guardrail_generate.json")
+        return
+    block = [int(b) for b in str(a.block).split(",") if b.strip() != ""]
+    m = intervene.guardrail_run(model_spec, a.stimulus, block=block,
+                                seed=a.master_seed, out_dir=out)
+    g = m["guardrail"]
+    print(f"guardrail: forbidding outputs {g['block']}")
+    print(f"  prevented {g['n_prevented']} of {g['n_steps']} step(s): "
+          f"{g['prevented_steps']}")
+    print(f"  reliable (0 blocked outputs leaked): {g['reliable']}")
+    print(f"wrote {out}/guardrail_metrics.json")
 
 
 def _cmd_taps(a):
@@ -376,6 +445,10 @@ def _cmd_live(a):
 
 
 def main(argv=None):
+    try:  # the LM guardrail can emit non-ASCII (e.g. circled digits) -- don't
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # crash on print
+    except Exception:
+        pass
     ap = argparse.ArgumentParser(prog="hodos_monitor",
                                  description="Hodos model monitor: portrait any model, keep history, flag changes, weave relations.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -525,6 +598,11 @@ def main(argv=None):
                          "the gate suppresses the target at range steps where "
                          "the driver's mean activation deviates more than this "
                          "from its run mean")
+    iv.add_argument("--live", action="store_true",
+                    help="for --op gate: run as a LIVE guardrail -- calibrate the "
+                         "trigger band on a natural pass, then block the target IN "
+                         "the forward pass as the model runs (a real block, not a "
+                         "replay); renders the whole-field relations before/after")
     iv.add_argument("--alpha", type=float, default=1.0,
                     help="change strength in [0,1]; 0 = natural run")
     iv.add_argument("--range", nargs=2, type=int, default=None,
@@ -541,6 +619,26 @@ def main(argv=None):
                     help="used directly as the stimulus seed")
     iv.add_argument("--out", required=True)
     iv.set_defaults(fn=_cmd_intervene)
+
+    gr = sub.add_parser("guardrail", help="a guardrail: forbid the model from "
+                        "producing the named outputs -- mask them so it cannot "
+                        "emit them (a reliable block, enforced at generation)")
+    _add_model_args(gr)
+    gr.add_argument("--block", default="",
+                    help="comma-separated output indices to forbid (class ids for "
+                         "a classifier, token ids for a language model)")
+    gr.add_argument("--generate", action="store_true",
+                    help="autoregressive guarded GENERATION (needs an hf:<id> "
+                         "model): generate from --prompt while blocking --block-text")
+    gr.add_argument("--prompt", default="", help="prompt text for --generate")
+    gr.add_argument("--block-text", default="",
+                    help="comma-separated words/phrases to forbid, tokenized with "
+                         "the model's own tokenizer (for --generate)")
+    gr.add_argument("--n-steps", type=int, default=24,
+                    help="tokens to generate for --generate")
+    gr.add_argument("--master-seed", type=int, default=DEFAULT_MASTER_SEED)
+    gr.add_argument("--out", required=True)
+    gr.set_defaults(fn=_cmd_guardrail)
 
     tp = sub.add_parser("taps", help="list the tap taxonomy — proof of which internal sites are tapped")
     _add_model_args(tp)

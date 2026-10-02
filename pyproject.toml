@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "panaesthesis"
-version = "0.13.2"
-description = "A monitoring instrument for any system with internal relations: watch and reshape the relations between a system's parts through four information-geometry equations."
+version = "0.14.0"
+description = "A monitoring instrument for any system with internal relations: watch, reshape, and guard the relations between a system's parts through four information-geometry equations."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "Apache-2.0" }
@@ -20,6 +20,7 @@ dependencies = ["numpy", "matplotlib", "pillow"]
 
 [project.optional-dependencies]
 torch = ["torch"]
+hf = ["torch", "transformers"]
 
 [project.urls]
 Homepage = "https://github.com/xfloukiex-lab/panaesthesis"

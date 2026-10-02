@@ -222,8 +222,8 @@ def _caption_text(m, weights_basename, note=None):
     n_pair = prov.get("n_pair", 64)
     sha = prov.get("weights_sha256", "")
     sha_s = f"sha256 {sha[:12]}…" if sha else "no stored weights"
-    # A reader-demo / regime run keeps the caption verbatim; a connected dataset with
-    # no planted caps gets a caption in its own terms, not the reader's.
+    # A reader-demo / regime run keeps the v1 caption verbatim; a connected dataset
+    # with no planted caps gets a caption in its own terms, not the reader's.
     if str(stim).startswith("reader") or m.get("acc_clean") is not None:
         last = (f"Caps mark the INPUT (planted). acc clean {_fmt(m.get('acc_clean'))} "
                 f"→ degraded {_fmt(m.get('acc_degraded'))}; "
@@ -299,7 +299,8 @@ def _draw_panels(fig, gs, m, P, Q, gap, eps, nullm, z, tau, weights_basename,
         fixed 5-wide kernel on a 2-step run returned 5 points against 2 timestamps and the
         portrait died with `x and y must have same first dimension`. That is a NETWORK
         assumption in a domain-free surface: a net runs hundreds of steps, a connected dataset
-        can carry 2. The window is now clamped to the run's own length.
+        can carry 2. Measured 2026-09-23 on real connected data: 6 of 11 datasets could not be
+        portraited at all. The window is now clamped to the run's own length.
         """
         x = np.asarray(x, dtype=float)
         n = len(x)

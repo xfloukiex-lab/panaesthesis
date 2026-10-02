@@ -9,7 +9,7 @@ allows it — you reshape a relation and watch the whole field reorganize.
 It is software, not art. Every curve is computed from the published Hodos math,
 not tuned.
 
-Two instruments:
+Three instruments:
 
 - **Hodoscope** — the microscope. Watch and measure a system's internal
   relational life: `portrait`, `live` (and `live --twin`), `field` (every site
@@ -17,6 +17,11 @@ Two instruments:
 - **Hodotome** — the scalpel. Reach in, change a named relation, continue the
   run downstream, and measure what happened: `intervene`, `splice` / `cut`,
   the LoRA branch readout, `--gif` views of the run.
+- **Hodophylax** — the guard. A conditional gate that fires only when a watched
+  relation crosses a threshold, and an output guardrail that masks forbidden
+  tokens so a connected language model cannot emit them: `guardrail` (with
+  `--generate` for a connected LM), and `intervene --op gate`. No fire, no
+  touch; untouched wires stay bit-identical.
 
 The four equations, in one line each:
 
@@ -91,6 +96,21 @@ python -m hodos_monitor intervene --model torch:mymodel.py:net --level head --op
 
 Each reshape is paired with a whole-field before/after map, so you see the
 system reorganize, not just one number move.
+
+## Guard a relation (Hodophylax)
+
+The guard watches a trigger and acts only when it crosses a threshold. A
+conditional gate suppresses a target's columns at the fired steps and only
+there; the output guardrail masks forbidden token ids at a connected language
+model's output so it cannot emit them:
+
+```
+python -m hodos_monitor intervene --model torch:mymodel.py:net --op gate --driver <tap> --gate-k 1.0 --out ./out
+python -m hodos_monitor guardrail --generate --model hf:Qwen/Qwen2.5-0.5B --prompt "The little robot learned to" --block-text "count,1,2,3" --out ./out
+```
+
+The `hf:<model_id>` adapter and `guardrail --generate` need `torch` and
+`transformers` (the `hf` extra). The gate on a `torch:` model needs only `torch`.
 
 ## Honesty labels (kept on every reading)
 

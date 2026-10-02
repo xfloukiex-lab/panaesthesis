@@ -713,7 +713,8 @@ def _render_spliced(out_path, m, P, Q, gap, eps_b, eps_a, nullm_a, z_a, tau,
     # ⛔ SAME DEFECT AS `taps`, SECOND SITE: this formatted `n_params` with a thousands
     # separator, and a CONNECTED SYSTEM has no parameters — `ValueError: Cannot specify ','
     # with 's'` on every splice over a dataset. Size is now stated in whatever terms the
-    # connected thing actually has.
+    # connected thing actually has. Found by sweeping the whole surface rather than the one
+    # command in hand (tests/sweep_connected_surface.py).
     _np = prov.get("n_params")
     if isinstance(_np, (int, float)) and not isinstance(_np, bool):
         _size = f"{int(_np):,}-param"

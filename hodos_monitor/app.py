@@ -26,8 +26,8 @@ STATE_PATH = JOB_ROOT / "connection.json"
 RECENT_PATH = JOB_ROOT / "recent.json"
 DEMO = "npz:" + str((REPO / "models" / "demo_reader.npz").resolve())
 
-# ── palette: the Vektorgeist study/research pages (light tan, pastel) -
-# the exact :root values from the Vektorgeist research palette
+# ── palette: the Vektorgeist study/research pages (light tan, pastel) - the
+# exact :root values from xfloukiex-lab.github.io/vektorgeist-research
 PAPER = "#f5f1e8"   # tan page background
 PANEL = "#fffdf8"   # warm near-white cards / panels
 SLAB = "#efe9dc"    # slightly recessed calm panels (idle / advanced)
@@ -42,7 +42,7 @@ BAD = "#a3392c"     # muted brick red
 # The three views the app puts up front. Everything else stays in the CLI.
 # fields are ADVANCED (hidden by default) - sensible defaults run without them.
 VIEWS = [
-    {"id": "portrait", "label": "Portrait",
+    {"id": "portrait", "label": "Hodoscope: Portrait",
      "blurb": "The whole read as one picture: two layers over time, the gap "
               "between them, and whether they come together under strain.",
      "fields": [("stimulus", "Stimulus", "text", "reader120"),
@@ -50,7 +50,7 @@ VIEWS = [
                 ("master_seed", "Seed", "int", "20260919"),
                 ("taps", "Taps (early,late,output - blank = auto)", "text", ""),
                 ("n_pair", "Pairing count", "int", "64")]},
-    {"id": "field", "label": "Field",
+    {"id": "field", "label": "Hodoscope: Field",
      "blurb": "The whole field at once: every internal site related to every "
               "other. This is the map that reorganizes when you change something.",
      "fields": [("stimulus", "Stimulus", "text", "reader120"),
@@ -59,7 +59,7 @@ VIEWS = [
                 ("max_taps", "Max sites", "int", "48"),
                 ("n_pair", "Pairing count", "int", "64"),
                 ("master_seed", "Seed", "int", "20260919")]},
-    {"id": "intervene", "label": "Change",
+    {"id": "intervene", "label": "Hodotome",
      "blurb": "Change one relation - a head, a layer, a whole class - and watch "
               "the field reorganize before and after.",
      "fields": [("stimulus", "Stimulus", "text", "reader120"),
@@ -75,6 +75,15 @@ VIEWS = [
                  ["head", "resid", "mlp", "attn", "module", "all"], "head"),
                 ("max_taps", "Max sites", "int", "48"),
                 ("n_pair", "Pairing count", "int", "64")]},
+]
+
+# The Gate tab is custom (not a VIEWS image tab): it runs `intervene --op gate`
+# and draws WHEN the gate fires - the trigger tap's activation against the
+# threshold, with the fired steps marked - rather than only a final image.
+GATE_FIELDS = [
+    ("prompt", "Start of a sentence", "text", "The little robot learned to"),
+    ("block_text", "Words to forbid (comma-separated)", "text", ""),
+    ("n_steps", "How many words to write", "int", "24"),
 ]
 
 
@@ -199,6 +208,7 @@ class Panaesthesis:
         self._build_connect_tab()
         for v in VIEWS:
             self._build_view_tab(v)
+        self._build_gate_tab()
         self._build_research_tab()
 
     # ---- Connect: one obvious way in --------------------------------------
@@ -225,6 +235,20 @@ class Panaesthesis:
                    command=self.try_demo).pack(side="left")
         ttk.Button(row, text="Open my own model…",
                    command=self.browse_model).pack(side="left", padx=(12, 0))
+
+        spec_row = tk.Frame(wrap, bg=PAPER)
+        spec_row.pack(anchor="w", pady=(14, 0))
+        tk.Label(spec_row, text="…or a model by name:", bg=PAPER, fg=SUB,
+                 font=("Segoe UI", 10)).pack(side="left")
+        self.spec_var = tk.StringVar()
+        ttk.Entry(spec_row, textvariable=self.spec_var, width=32).pack(
+            side="left", padx=(8, 0))
+        ttk.Button(spec_row, text="Connect",
+                   command=lambda: self.connect(self.spec_var.get())).pack(
+            side="left", padx=(8, 0))
+        tk.Label(wrap, text="e.g.  hf:Qwen/Qwen2.5-0.5B  (a language model)",
+                 bg=PAPER, fg=SUB, font=("Segoe UI", 9)).pack(anchor="w",
+                                                              pady=(4, 0))
 
         self.connect_status = tk.Label(wrap, text="", bg=PAPER, fg=SUB,
                                        font=("Segoe UI", 10))
@@ -352,9 +376,247 @@ class Panaesthesis:
                      font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(8, 0))
             tk.Label(wrap, text=q, bg=PAPER, fg=SUB,
                      font=("Segoe UI", 10)).pack(anchor="w")
-        tk.Label(wrap, text="Ten papers, open access - the Vektorgeist research site.",
+        tk.Label(wrap, text="Ten papers, open access - the floukie research site.",
                  bg=PAPER, fg=SUB, font=("Segoe UI", 9, "italic")
                  ).pack(anchor="w", pady=(16, 0))
+
+    # ---- Gate: run the threshold tool and SHOW it firing -------------------
+    def _build_gate_tab(self):
+        tk, ttk = self.tk, self.ttk
+        f = tk.Frame(self.nb, bg=PAPER)
+        self.nb.add(f, text="  Hodophylax  ")
+
+        top = tk.Frame(f, bg=PAPER)
+        top.pack(fill="x", padx=20, pady=(14, 6))
+        tk.Label(top, text="Hodophylax", bg=PAPER, fg=INK,
+                 font=("Georgia", 15)).pack(side="left")
+        run_btn = ttk.Button(top, text="Run", style="Primary.TButton",
+                             command=self.run_gate)
+        run_btn.pack(side="right")
+        ttk.Button(top, text="Options ▾", style="Link.TButton",
+                   command=self._toggle_gate_adv).pack(side="right", padx=(0, 12))
+        tk.Label(f, bg=PAPER, fg=SUB, justify="left", wraplength=1060,
+                 font=("Segoe UI", 10),
+                 text="Type a starting sentence and the word(s) the model must "
+                      "not use, then Run. You'll see what it writes normally vs "
+                      "what it writes with those words forbidden — it cannot use "
+                      "them.").pack(anchor="w", padx=20)
+
+        # the two controls that define the gate stay visible; rest under Options
+        key = tk.Frame(f, bg=PAPER)
+        key.pack(fill="x", padx=20, pady=(8, 0))
+        vars_ = {}
+        for c, field in enumerate(GATE_FIELDS[:2]):
+            k, label, _kind, default = field
+            cell = tk.Frame(key, bg=PAPER)
+            cell.grid(row=0, column=c, sticky="w", padx=(0, 18))
+            tk.Label(cell, text=label, bg=PAPER, fg=SUB,
+                     font=("Segoe UI", 9)).pack(anchor="w")
+            var = tk.StringVar(value=str(default))
+            ttk.Entry(cell, textvariable=var,
+                      width=(40 if k in ("prompt", "block_text") else 16)
+                      ).pack(anchor="w")
+            vars_[k] = var
+
+        adv = tk.Frame(f, bg=PANEL, highlightbackground=LINE, highlightthickness=1)
+        grid = tk.Frame(adv, bg=PANEL)
+        grid.pack(fill="x", padx=12, pady=10)
+        for c, field in enumerate(GATE_FIELDS[2:]):
+            k, label, kind, default = field
+            cell = tk.Frame(grid, bg=PANEL)
+            cell.grid(row=c // 3, column=c % 3, sticky="w", padx=8, pady=5)
+            tk.Label(cell, text=label, bg=PANEL, fg=SUB,
+                     font=("Segoe UI", 9)).pack(anchor="w")
+            var = tk.StringVar(value=str(default))
+            if isinstance(kind, list):
+                w = ttk.Combobox(cell, textvariable=var, values=kind,
+                                 state="readonly", width=16)
+            else:
+                w = ttk.Entry(cell, textvariable=var, width=18)
+            w.pack(anchor="w")
+            vars_[k] = var
+
+        status = tk.Label(f, text="", bg=PAPER, fg=SUB, font=("Segoe UI", 10))
+        status.pack(anchor="w", padx=20, pady=(8, 0))
+
+        body = tk.Frame(f, bg=PAPER)
+        body.pack(fill="both", expand=True, padx=20, pady=(6, 14))
+        idle = tk.Frame(body, bg=SLAB, highlightbackground=LINE,
+                        highlightthickness=1)
+        tk.Label(idle, text="Connect a model to begin.", bg=SLAB, fg=SUB,
+                 font=("Georgia", 14)).place(relx=0.5, rely=0.44, anchor="center")
+        ttk.Button(idle, text="▶  Try the demo", style="Primary.TButton",
+                   command=self.try_demo).place(relx=0.5, rely=0.56,
+                                                anchor="center")
+
+        canvas = tk.Frame(body, bg=PAPER)
+        summary = tk.Label(canvas, bg=PAPER, fg=INK, text="", justify="left",
+                           wraplength=1060, font=("Segoe UI", 10))
+        summary.pack(anchor="w")
+        tk.Label(canvas, text="What the model produces — without the guardrail vs "
+                 "with it (blocked steps marked)", bg=PAPER, fg=SUB,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(8, 2))
+        outtext = tk.Text(canvas, height=16, bg=PANEL, fg=INK, relief="solid",
+                          borderwidth=1, wrap="word", font=("Consolas", 10))
+        outtext.pack(fill="both", expand=True)
+        files = tk.Label(canvas, bg=PAPER, fg=SUB, text="",
+                         font=("Segoe UI", 9))
+        files.pack(anchor="w", pady=(6, 0))
+        log = tk.Text(canvas, height=5, bg=PANEL, fg="#5a534a", relief="solid",
+                      borderwidth=1, wrap="word", font=("Consolas", 9))
+
+        self.gate = {
+            "frame": f, "vars": vars_, "run_btn": run_btn, "status": status,
+            "adv": adv, "adv_open": False, "idle": idle, "canvas": canvas,
+            "summary": summary, "outtext": outtext, "files": files, "log": log}
+
+    def _toggle_gate_adv(self):
+        g = self.gate
+        if g["adv_open"]:
+            g["adv"].pack_forget()
+        else:
+            g["adv"].pack(fill="x", padx=20, pady=(8, 0), before=g["status"])
+        g["adv_open"] = not g["adv_open"]
+
+    def run_gate(self):
+        if not self.connected:
+            return
+        g = self.gate
+        params = {k: var.get() for k, var in g["vars"].items()}
+        if not (params.get("block_text") or "").strip():
+            g["status"].config(text="Type the word(s) to forbid.", fg=BAD)
+            return
+        params["generate"] = "1"
+        params["model"] = self.connected["spec"]
+        jid = uuid.uuid4().hex[:8]
+        out = JOB_ROOT / jid
+        out.mkdir(parents=True, exist_ok=True)
+        try:
+            argv = build_argv("guardrail", params, out)
+        except (ValueError, KeyError) as e:
+            g["status"].config(text=f"error: {e}", fg=BAD)
+            return
+        g["status"].config(text="working… (writing with and without the guardrail)",
+                           fg=SUB)
+        g["log"].delete("1.0", "end")
+        g["log"].pack_forget()
+        g["summary"].config(text="")
+        g["outtext"].delete("1.0", "end")
+        g["files"].config(text="")
+
+        def work():
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "hodos_monitor"] + argv,
+                cwd=str(REPO), stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1)
+            for line in proc.stdout:
+                self.msgq.put(("gate_log", line))
+            proc.wait()
+            self.msgq.put(("gate_done", proc.returncode, str(out)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_gate_output(self, rc, out_dir):
+        g = self.gate
+        out = Path(out_dir)
+        data = _load_json(out / "guardrail_generate.json", None)
+        if rc != 0 or not data:
+            g["status"].config(text="failed - see details", fg=BAD)
+            g["log"].pack(fill="x", pady=(8, 0))
+            return
+        nat = data.get("natural_text", "")
+        gd = data.get("guarded_text", "")
+        n_prev = data.get("n_prevented", 0)
+        bt = data.get("block_text", "")
+        g["summary"].config(
+            text=(f"Forbade: {bt}   ·   the guardrail stopped the model from using "
+                  f"it {n_prev} time(s) as it wrote."), fg=INK)
+        g["outtext"].delete("1.0", "end")
+        g["outtext"].insert(
+            "end",
+            f"Normally, the model writes:\n\n    {nat}\n\n"
+            f"{'-' * 70}\n\n"
+            f"With the guardrail on (those words forbidden), it writes:\n\n"
+            f"    {gd}\n")
+        g["files"].config(text=f"saved in {out}")
+        g["status"].config(text="done", fg=GOOD)
+
+    def _photo(self, path, maxw=540, maxh=420):
+        try:
+            from PIL import Image, ImageTk
+        except ImportError:
+            return None
+        try:
+            im = Image.open(path).convert("RGB")
+            im.thumbnail((maxw, maxh))
+            return ImageTk.PhotoImage(im)
+        except Exception:
+            return None
+
+    def _redraw_firing(self):
+        g = getattr(self, "gate", None)
+        if g and g.get("last"):
+            gate, _flips = g["last"]
+            self._draw_firing(g["chart"], gate)
+
+    def _draw_firing(self, cv, gate):
+        cv.delete("all")
+        series = gate.get("driver_series") or []
+        W = cv.winfo_width()
+        if not W or W < 50:
+            W = 900
+        H = int(cv["height"])
+        if not series:
+            cv.create_text(W // 2, H // 2, fill=SUB, font=("Segoe UI", 10),
+                           text="(no activation series recorded)")
+            return
+        lo, hi = gate.get("threshold_lo"), gate.get("threshold_hi")
+        mean = gate.get("driver_mean")
+        rng = gate.get("range") or [0, len(series)]
+        fired = set(gate.get("fired_steps") or [])
+        padl, padr, padtop, padbot = 46, 12, 16, 22
+        vals = list(series) + [v for v in (lo, hi) if v is not None]
+        vmin, vmax = min(vals), max(vals)
+        if vmax <= vmin:
+            vmax = vmin + 1.0
+        mid, span = (vmax + vmin) / 2, (vmax - vmin) * 1.12
+        vlo, vhi = mid - span / 2, mid + span / 2
+        n = len(series)
+
+        def X(i):
+            return padl + (W - padl - padr) * (i / max(1, n - 1))
+
+        def Y(v):
+            return padtop + (H - padtop - padbot) * (1 - (v - vlo) / (vhi - vlo))
+
+        if rng and len(rng) == 2 and rng[1] > rng[0]:
+            cv.create_rectangle(X(rng[0]), padtop, X(min(rng[1] - 1, n - 1)),
+                                H - padbot, fill="#f3eee2", outline="")
+        if lo is not None and hi is not None:
+            cv.create_rectangle(padl, Y(hi), W - padr, Y(lo),
+                                fill="#edf1ef", outline="")
+            for yv in (lo, hi):
+                cv.create_line(padl, Y(yv), W - padr, Y(yv), fill=ACCENT,
+                               dash=(4, 3))
+        if mean is not None:
+            cv.create_line(padl, Y(mean), W - padr, Y(mean), fill="#b9b0a0")
+        pts = []
+        for i, v in enumerate(series):
+            pts += [X(i), Y(v)]
+        if len(pts) >= 4:
+            cv.create_line(*pts, fill=INK, width=2)
+        for i in sorted(fired):
+            if 0 <= i < n:
+                cv.create_line(X(i), padtop, X(i), H - padbot, fill=BAD,
+                               dash=(2, 2))
+                cv.create_oval(X(i) - 3, Y(series[i]) - 3, X(i) + 3,
+                               Y(series[i]) + 3, fill=BAD, outline="")
+        cv.create_text(padl, padtop - 3, text="trigger activation", anchor="sw",
+                       fill=SUB, font=("Segoe UI", 8))
+        cv.create_text(W - padr, H - 6, text="step →", anchor="se", fill=SUB,
+                       font=("Segoe UI", 8))
+        if hi is not None:
+            cv.create_text(W - padr - 2, Y(hi) - 2, text="fire threshold",
+                           anchor="se", fill=ACCENT, font=("Segoe UI", 8))
 
     # ---- connection --------------------------------------------------------
     def _reflect_connection(self):
@@ -379,6 +641,15 @@ class Panaesthesis:
             else:
                 w["canvas"].pack_forget()
                 w["idle"].pack(fill="both", expand=True)
+        g = getattr(self, "gate", None)
+        if g:
+            g["run_btn"].config(state=("normal" if c else "disabled"))
+            if c:
+                g["idle"].pack_forget()
+                g["canvas"].pack(fill="both", expand=True)
+            else:
+                g["canvas"].pack_forget()
+                g["idle"].pack(fill="both", expand=True)
 
     def try_demo(self):
         self.connect(DEMO)
@@ -538,6 +809,12 @@ class Panaesthesis:
                 elif kind == "done":
                     _, vid, rc, out_dir = msg
                     self._show_output(vid, rc, out_dir)
+                elif kind == "gate_log":
+                    self.gate["log"].insert("end", msg[1])
+                    self.gate["log"].see("end")
+                elif kind == "gate_done":
+                    _, rc, out_dir = msg
+                    self._show_gate_output(rc, out_dir)
         except queue.Empty:
             pass
         self.root.after(120, self._pump)

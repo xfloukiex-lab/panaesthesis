@@ -469,8 +469,9 @@ class TorchModuleAdapter(ModelAdapter):
         late = inner[-1] if len(inner) > 1 else inner[0]
         return early, late, "output"
 
-    def forward(self, x, overrides=None):
+    def forward(self, x, overrides=None, gate=None):
         torch = self._torch
+        self._gate_fired = False
         if isinstance(x, np.ndarray):
             xt = torch.from_numpy(np.ascontiguousarray(x)).to(torch.float32)
         elif isinstance(x, torch.Tensor):
@@ -511,6 +512,35 @@ class TorchModuleAdapter(ModelAdapter):
                         return _torch.from_numpy(_arr).to(o.device, o.dtype) \
                             if isinstance(o, _torch.Tensor) else o
                     handles.append(mod.register_forward_hook(_rep))
+            if gate is not None:
+                tgt = self._resolve(gate["target"])
+                trig_tap, lo, hi = gate["trigger"], gate["lo"], gate["hi"]
+                alpha = float(gate.get("alpha", 1.0))
+                cols = gate.get("cols")
+                cols_t = (torch.tensor(list(cols), dtype=torch.long)
+                          if cols is not None else None)
+
+                def _gate_hook(m, _i, o, _torch=torch):
+                    # LIVE guardrail: decide from the trigger tap ALREADY captured
+                    # in THIS same forward (the trigger executes upstream of the
+                    # target), and block the target in this pass -- no replay. A
+                    # live gate can only use the past, so the band [lo, hi] is
+                    # calibrated beforehand, never from this run's future.
+                    trig = self._captured.get(trig_tap)
+                    if trig is None or not isinstance(o, _torch.Tensor):
+                        return o
+                    val = float(trig.detach().float().mean())
+                    if lo <= val <= hi:
+                        return o  # inside the band: the model runs untouched
+                    self._gate_fired = True
+                    out = o.clone()
+                    if cols_t is not None and int(cols_t.max()) < out.shape[-1]:
+                        idx = cols_t.to(out.device)
+                        out[..., idx] = out[..., idx] * (1.0 - alpha)
+                    else:
+                        out = out * (1.0 - alpha)
+                    return out
+                handles.append(tgt.register_forward_hook(_gate_hook))
             with torch.no_grad():
                 out = self.module(xt)
             taps = {}
@@ -685,6 +715,49 @@ class DataAdapter(ModelAdapter):
 
 
 # ---------------------------------------------------------------------------
+# HuggingFace causal LM (model + tokenizer) — for guarded TEXT generation
+# ---------------------------------------------------------------------------
+
+class HFCausalLMAdapter(TorchModuleAdapter):
+    """A HuggingFace causal LM and its tokenizer, for guarded text generation.
+
+    `hf:<model_id>` loads the model + tokenizer (local files only) and wraps the
+    model so forward(token-id array) -> logits, exactly like any torch model, and
+    additionally carries the tokenizer so the guardrail can work in plain text
+    (encode a prompt and the forbidden words, decode the continuation). Every
+    per-head / residual site is still tappable (all_sites), so the relational
+    views work on it too.
+    """
+
+    kind = "hf"
+
+    def __init__(self, model_id, all_sites=False):
+        torch = _load_torch()
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        self.model_id = model_id
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_id, local_files_only=True)
+
+        class _CausalNet(torch.nn.Module):
+            def __init__(self, m):
+                super().__init__()
+                self.model = m
+
+            def forward(self, x):
+                return self.model(input_ids=x.to(torch.long)).logits
+
+        hf = AutoModelForCausalLM.from_pretrained(
+            model_id, local_files_only=True, torch_dtype=torch.float32).eval()
+        super().__init__(_CausalNet(hf), name=model_id, all_sites=all_sites)
+
+    def encode(self, text):
+        return [int(t) for t in self.tokenizer.encode(text)]
+
+    def decode(self, ids):
+        return self.tokenizer.decode([int(t) for t in ids])
+
+
+# ---------------------------------------------------------------------------
 # spec loading
 # ---------------------------------------------------------------------------
 
@@ -701,13 +774,15 @@ def load_model(spec, **kwargs):
     kind, _, rest = spec.partition(":")
     # NumpyCheckpointAdapter takes only input_shape; all_sites/name are torch-
     # only. A numpy checkpoint already exposes every layer as a site, so the
-    # flag is a no-op here — drop it instead of erroring, so the field/family
-    # paths do not crash on an .npz.
+    # flag is a no-op here — drop it instead of erroring (fix from Wren, found
+    # building the Linux package: field/family on an .npz crashed on all_sites).
     npz_kwargs = {k: v for k, v in kwargs.items() if k == "input_shape"}
     if kind == "npz":
         return NumpyCheckpointAdapter(rest, **npz_kwargs)
     if kind == "data":
         return DataAdapter(rest)
+    if kind == "hf":
+        return HFCausalLMAdapter(rest, all_sites=kwargs.get("all_sites", False))
     if kind in ("torch", "torchall"):
         obj = _import_spec(rest)
         torch = _load_torch()

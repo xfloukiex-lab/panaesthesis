@@ -107,8 +107,27 @@ def build_argv(tool, p, out):
             argv += ["--select", p["select"]]
         if p.get("driver"):
             argv += ["--driver", p["driver"]]
+        if p.get("gate_k"):
+            argv += ["--gate-k", str(p["gate_k"])]
+        if p.get("live"):
+            argv.append("--live")
         if p.get("range"):
             argv += ["--range"] + str(p["range"]).split()
+        return argv
+    if tool == "guardrail":
+        argv = (["guardrail"] + model + stimulus
+                + ["--master-seed", str(p.get("master_seed") or 20260919),
+                   "--out", str(out)])
+        if p.get("generate"):
+            argv.append("--generate")
+        if p.get("prompt"):
+            argv += ["--prompt", str(p["prompt"])]
+        if p.get("block_text"):
+            argv += ["--block-text", str(p["block_text"])]
+        if p.get("n_steps"):
+            argv += ["--n-steps", str(p["n_steps"])]
+        if p.get("block"):
+            argv += ["--block", str(p["block"])]
         return argv
     raise ValueError(f"unknown tool: {tool}")
 

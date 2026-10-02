@@ -455,6 +455,13 @@ def intervene_run(model, stimulus, level, select, op="cut", driver=None,
             fire_idx = np.array([], dtype=np.int64)
         gate_info = {"driver": driver, "k": float(gate_k),
                      "driver_mean": mu, "driver_std": sd,
+                     # per-step trigger activation + the fire band, so a UI can
+                     # show WHEN the gate fires (activation vs threshold) without
+                     # re-running the model (2026-10-01, for the app Gate tab).
+                     "driver_series": [float(x) for x in ds],
+                     "threshold_lo": mu - float(gate_k) * sd,
+                     "threshold_hi": mu + float(gate_k) * sd,
+                     "range": [int(w0), int(w1)],
                      "fired_steps": [int(tt) for tt in fire_idx],
                      "n_fired": int(len(fire_idx))}
     rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
@@ -563,6 +570,229 @@ def intervene_run(model, stimulus, level, select, op="cut", driver=None,
             f"{op} @ {level}:{select}")
     model.close()
     return metrics
+
+
+def live_gate_run(model, stimulus, level, select, driver, gate_k=2.0, alpha=1.0,
+                  splice_range=None, seed=20260918, out_dir=".",
+                  site_class="head", max_taps=48, n_pair=64):
+    """LIVE guardrail: block the model as it runs, not on a replay.
+
+    Pass 1 calibrates the trigger's band from a NATURAL run (a live gate can only
+    use the past). Pass 2 is the GUARDED run: at each range step the target module
+    is suppressed inside the SAME forward the trigger fires on, so the model is
+    actually stopped from producing it. Renders the whole-field relations before
+    (natural) vs after (guarded) -- the inside, moving.
+    """
+    from hodos_monitor.adapters import TorchModuleAdapter
+    if not driver:
+        raise SystemExit("--op gate needs --driver (the trigger the guardrail watches)")
+    model = _load(model)
+    if not isinstance(model, TorchModuleAdapter):
+        raise SystemExit("the live gate currently needs a torch model "
+                         "(spec torch:<file.py>:<attr>); the in-pass block is "
+                         "implemented on the torch adapter's forward")
+    if isinstance(stimulus, str):
+        stimulus = stimuli.load_stimulus(stimulus, seed=seed)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if driver not in model.tap_names():
+        raise SystemExit(f"trigger tap {driver!r} is not a tap on this model")
+    targets = resolve_targets(model, level, select)
+    tgt_mod = targets[0]["module"]
+    field_keep = field.select_taps(model.tap_names(), site_class, max_taps)
+    T = len(stimulus)
+    masks = stimulus.masks()
+    if splice_range is None:
+        strain = masks.get("strain")
+        rix = (np.flatnonzero(strain) if strain is not None and strain.any()
+               else np.arange(T))
+        w0, w1 = int(rix[0]), int(rix[-1]) + 1
+    else:
+        w0, w1 = int(splice_range[0]), int(splice_range[1])
+    ridx = set(range(w0, w1))
+
+    # --- pass 1: NATURAL calibration (trigger band, field_before, preds) ----
+    cap = {k: [] for k in field_keep}
+    drv, preds_nat = [], []
+    for t in range(T):
+        x, _y, _ = stimulus.step(t)
+        acts = model.forward(np.asarray(x)[None])
+        for k in field_keep:
+            if k in acts:
+                cap[k].append(np.asarray(acts[k]).ravel())
+        drv.append(float(np.asarray(acts[driver]).mean()))
+        out = acts.get("output")
+        preds_nat.append(int(np.asarray(out).ravel().argmax())
+                         if out is not None else -1)
+    ds = np.asarray(drv)
+    mu, sd = float(ds.mean()), float(ds.std())
+    lo, hi = mu - float(gate_k) * sd, mu + float(gate_k) * sd
+    field_before = field.relational_field(
+        {k: np.stack(v) for k, v in cap.items() if v}, seed=int(seed), n_pair=n_pair)
+
+    # --- pass 2: GUARDED live run -- block the target IN-PASS on fired steps -
+    gate = {"trigger": driver, "target": tgt_mod, "lo": lo, "hi": hi,
+            "alpha": float(alpha)}
+    fld2 = {k: [] for k in field_keep}
+    preds_gd, fired = [], []
+    for t in range(T):
+        x, _y, _ = stimulus.step(t)
+        use_gate = gate if (t in ridx and alpha > 0.0) else None
+        acts = model.forward(np.asarray(x)[None], gate=use_gate)
+        if use_gate is not None and getattr(model, "_gate_fired", False):
+            fired.append(int(t))
+        for k in field_keep:
+            if k in acts:
+                fld2[k].append(np.asarray(acts[k]).ravel())
+        out = acts.get("output")
+        preds_gd.append(int(np.asarray(out).ravel().argmax())
+                        if out is not None else -1)
+    field_after = field.relational_field(
+        {k: np.stack(v) for k, v in fld2.items() if v}, seed=int(seed), n_pair=n_pair)
+    delta = _field_delta(field_before, field_after)
+    flips = [t for t in range(T) if preds_nat[t] != preds_gd[t]]
+
+    gate_info = {"driver": driver, "k": float(gate_k), "driver_mean": mu,
+                 "driver_std": sd, "driver_series": [float(v) for v in ds],
+                 "threshold_lo": lo, "threshold_hi": hi, "range": [w0, w1],
+                 "fired_steps": fired, "n_fired": len(fired),
+                 "live": True, "target": tgt_mod}
+    desc = model.describe()
+
+    def _summ(f):
+        return {k: f[k] for k in ("n_taps", "D_offdiag_mean", "D_offdiag_max",
+                                  "z_field_mean", "z_field_max")}
+
+    reading = _reading({"acc_clean_before": None, "acc_clean_after": None,
+                        "acc_degraded_before": None, "acc_degraded_after": None},
+                       delta, field_before, field_after, float(alpha))
+    metrics = {
+        "change": {"op": "gate", "live": True, "level": level, "select": select,
+                   "alpha": float(alpha), "driver": driver, "range": [w0, w1],
+                   "target": tgt_mod, "gate": gate_info},
+        "field_before": _summ(field_before), "field_after": _summ(field_after),
+        "field_delta": delta,
+        "predictions": {"natural": [int(p) for p in preds_nat],
+                        "changed": [int(p) for p in preds_gd]},
+        "behavior": {"n_flips": len(flips), "flips": flips, "reading": reading},
+        "honesty": HONESTY,
+        "provenance": {**desc,
+                       "stimulus": stimulus.describe().get("stimulus", "?"),
+                       "seed": str(seed), "n_pair": int(n_pair),
+                       "timestamp": datetime.now(timezone.utc).isoformat()},
+    }
+    with open(out_dir / "intervene_metrics.json", "w") as f:
+        json.dump(metrics, f, indent=1)
+    _render(out_dir / "field_before.png", field_before,
+            f"{desc.get('model_name', 'model')} -- relations BEFORE (natural)")
+    _render(out_dir / "field_after.png", field_after,
+            f"{desc.get('model_name', 'model')} -- relations AFTER the live gate "
+            f"on {tgt_mod}")
+    model.close()
+    return metrics
+
+
+def guardrail_run(model, stimulus, block, seed=20260918, out_dir="."):
+    """A guardrail: forbid the model from producing any output in `block`.
+
+    At each step the output logits for the blocked indices are masked to -inf, so
+    the model CANNOT emit them -- a reliable block, not a nudge. Records the steps
+    the guardrail actually prevented (the model's unmasked top choice was a blocked
+    output) and the allowed output it produced instead. `block` is a set of output
+    indices (class ids for a classifier, token ids for an LM).
+    """
+    model = _load(model)
+    if isinstance(stimulus, str):
+        stimulus = stimuli.load_stimulus(stimulus, seed=seed)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    block = sorted({int(b) for b in block})
+    block_set = set(block)
+    T = len(stimulus)
+    nat_top, guarded_top, prevented = [], [], []
+    for t in range(T):
+        x, _y, _ = stimulus.step(t)
+        acts = model.forward(np.asarray(x)[None])
+        lg = np.asarray(acts["output"])
+        logits = (lg.reshape(lg.shape[0], -1)[0] if lg.ndim >= 2
+                  else lg.reshape(-1)).astype(np.float64)
+        nt = int(np.argmax(logits))
+        masked = logits.copy()
+        for b in block:
+            if 0 <= b < masked.shape[-1]:
+                masked[b] = -np.inf
+        gt = int(np.argmax(masked))
+        nat_top.append(nt)
+        guarded_top.append(gt)
+        if nt in block_set:
+            prevented.append(t)
+    emitted_blocked = [t for t in range(T) if guarded_top[t] in block_set]
+    metrics = {
+        "guardrail": {
+            "block": block, "n_steps": T,
+            "prevented_steps": prevented, "n_prevented": len(prevented),
+            "emitted_blocked_after": emitted_blocked,
+            "reliable": emitted_blocked == [],
+        },
+        "outputs": {"natural": nat_top, "guarded": guarded_top},
+        "honesty": HONESTY,
+        "provenance": {**model.describe(), "seed": str(seed),
+                       "timestamp": datetime.now(timezone.utc).isoformat()},
+    }
+    with open(out_dir / "guardrail_metrics.json", "w") as f:
+        json.dump(metrics, f, indent=1)
+    model.close()
+    return metrics
+
+
+def guardrail_generate(model, prompt_ids, block_ids, n_steps):
+    """Autoregressive guarded generation -- the guardrail at the OUTPUT.
+
+    Generate n_steps tokens twice from the same prompt: once naturally, once with
+    the guardrail. At each guarded step the forbidden token ids are masked to -inf
+    in the model's FINAL output logits (the emission point, after every layer has
+    run), so the model cannot emit them; the allowed top token is appended and fed
+    back. Returns both token sequences, the steps the guardrail prevented, and
+    whether any forbidden token leaked. `model` is any adapter whose
+    forward(token-id array) -> {'output': logits}.
+    """
+    model = _load(model)
+    block = {int(b) for b in block_ids}
+
+    def next_logits(ids):
+        acts = model.forward(np.asarray([ids]))
+        lg = np.asarray(acts["output"])
+        return (lg[0, -1] if lg.ndim == 3 else lg.reshape(-1)).astype(np.float64)
+
+    ids = list(prompt_ids)
+    natural = []
+    for _ in range(n_steps):
+        t = int(np.argmax(next_logits(ids)))
+        natural.append(t)
+        ids.append(t)
+
+    ids = list(prompt_ids)
+    guarded, prevented = [], []
+    for i in range(n_steps):
+        lg = next_logits(ids)
+        nat_top = int(np.argmax(lg))
+        for b in block:
+            if 0 <= b < lg.shape[-1]:
+                lg[b] = -np.inf
+        t = int(np.argmax(lg))
+        if nat_top in block:
+            prevented.append(i)
+        guarded.append(t)
+        ids.append(t)
+
+    leaked = [t for t in guarded if t in block]
+    return {
+        "prompt_ids": list(prompt_ids), "natural_ids": natural,
+        "guarded_ids": guarded, "block": sorted(block),
+        "prevented_steps": prevented, "n_prevented": len(prevented),
+        "reliable": leaked == [],
+    }
 
 
 def _render(path, fld, title):

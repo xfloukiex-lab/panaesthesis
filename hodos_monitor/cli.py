@@ -86,9 +86,10 @@ def _add_model_args(p):
                         "<path>.npz")
     p.add_argument("--weights", default=None,
                    help="legacy alias for --model npz:<weights>")
-    p.add_argument("--stimulus", default="reader120",
+    p.add_argument("--stimulus", default=None,
                    help="stimulus spec: reader120 | array:<path>.npy | "
-                        "array:<path>.npz")
+                        "array:<path>.npz (default: reader120 for a model, or a "
+                        "data: model's own rows)")
     p.add_argument("--taps", default=None,
                    help="three comma-separated tap names: early,late,output "
                         "(default: the adapter's choice)")
@@ -668,6 +669,15 @@ def main(argv=None):
     lv.set_defaults(fn=_cmd_live)
 
     a = ap.parse_args(argv)
+    # Default the stimulus: a `data:` model feeds its OWN rows; everything else
+    # uses the reader120 glyph protocol. (Was a hard 'reader120' default, which
+    # fed glyphs to a bring-your-own-data model — the wrong stimulus — and also
+    # dragged reader120's font requirement into data runs like `splice` on data.)
+    if getattr(a, "stimulus", "KEEP") is None:
+        _m = getattr(a, "model", None) or (
+            f"npz:{a.weights}" if getattr(a, "weights", None) else "")
+        a.stimulus = ("array:" + _m[len("data:"):] if _m.startswith("data:")
+                      else "reader120")
     a.fn(a)
 
 

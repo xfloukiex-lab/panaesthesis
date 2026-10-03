@@ -25,6 +25,12 @@ HARD_END = 80
 
 
 def _canvas(char, r):
+    if not factory.FONTS:
+        raise RuntimeError(
+            "reader120 needs at least one system TrueType font and none was found on this "
+            "machine. Install a font (e.g. DejaVu, Liberation, or Arial), or use a font-free "
+            "stimulus instead: `--stimulus array:<path>.npz`, or bring your own data with "
+            "`--model data:<path>.npz` (which feeds its own rows as the stimulus).")
     px = int(r.uniform(22, 44))
     font = ImageFont.truetype(r.choice(factory.FONTS), px)
     theme = r.random()

@@ -229,12 +229,14 @@ def splice_run(model, stimulus, alpha=1.0, splice=(), cut=(),
     masks = stimulus.masks()
     if splice_range is None:
         strain_m = masks.get("strain")
-        if strain_m is None or not strain_m.any():
-            raise ValueError(
-                "no splice_range given and the stimulus has no 'strain' "
-                "regime — pass splice_range=(start, end) explicitly")
-        idx = np.flatnonzero(strain_m)
-        splice_range = (int(idx[0]), int(idx[-1]) + 1)
+        if strain_m is not None and strain_m.any():
+            idx = np.flatnonzero(strain_m)
+            splice_range = (int(idx[0]), int(idx[-1]) + 1)
+        else:
+            # A bring-your-own-data stimulus has no 'strain' regime (that is a
+            # reader120 glyph-protocol notion). Apply over the whole run rather
+            # than refusing, so splice works on connected data without flags.
+            splice_range = (0, T)
     w0, w1 = int(splice_range[0]), int(splice_range[1])
     if not (0 <= w0 < w1 <= T):
         raise ValueError(
@@ -271,10 +273,15 @@ def splice_run(model, stimulus, alpha=1.0, splice=(), cut=(),
             n_late = b_nat.shape[0]
             n_early = e.shape[0]
             if n_early < n_pair:
-                raise ValueError(
-                    f"splicer needs early width >= n_pair={n_pair} "
-                    f"(early is grouped into {n_pair} addressable groups); "
-                    f"got early={n_early}")
+                # clamp to the available width (the field readout does the same)
+                # rather than refuse — a narrow tap, e.g. a connected dataset's
+                # parts, just gets fewer addressable groups.
+                if n_early < 2:
+                    raise ValueError(
+                        f"splicer needs an early tap at least 2 wide; got {n_early}")
+                print(f"note: early tap is {n_early} wide < n_pair={n_pair}; "
+                      f"clamping n_pair to {n_early}.", flush=True)
+                n_pair = n_early
         early.append(e)
         late_nat.append(b_nat)
         preds_nat.append(int(np.asarray(lg_out).ravel().argmax()))

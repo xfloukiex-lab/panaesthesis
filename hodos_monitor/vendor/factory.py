@@ -60,23 +60,39 @@ WIDGET_SIZE = 48
 
 
 def _curated_fonts():
-    """Latin UI fonts present on this box. Render tools, not training data."""
-    import glob
-    keep = []
-    for p in sorted(glob.glob('/usr/share/fonts/truetype/**/*.ttf', recursive=True)):
+    """Latin UI fonts present on this box, on ANY platform. Render tools, not
+    training data. Uses matplotlib's cross-platform font finder (matplotlib is a
+    dependency already) so it works on Windows/macOS/Linux instead of only the
+    Linux `/usr/share/fonts` path — an empty pool used to crash reader120 with a
+    cryptic `a cannot be empty` deep inside numpy.choice."""
+    try:
+        from matplotlib import font_manager
+        paths = list(font_manager.findSystemFonts(fontext="ttf"))
+    except Exception:
+        import glob
+        paths = (glob.glob('/usr/share/fonts/**/*.ttf', recursive=True)
+                 + glob.glob('C:/Windows/Fonts/*.ttf')
+                 + glob.glob('/System/Library/Fonts/**/*.ttf', recursive=True)
+                 + glob.glob('/Library/Fonts/**/*.ttf', recursive=True))
+    good = []
+    for p in sorted(paths):
         n = p.lower()
-        if 'emoji' in n or 'arabic' in n or 'lao' in n or 'kufi' in n:
+        if any(b in n for b in ('emoji', 'arabic', 'lao', 'kufi', 'symbol',
+                                'webding', 'wingding', 'marlett')):
             continue
-        if ('dejavu' in n or 'liberation' in n or 'notosans-' in n
-                or 'notoserif-' in n):
-            try:
-                ImageFont.truetype(p, 32)
-                keep.append(p)
-            except Exception:
-                pass
-    # cap Noto variants to keep the pool diverse but bounded
-    noto = [p for p in keep if 'noto' in p.lower()]
-    base = [p for p in keep if 'noto' not in p.lower()]
+        try:
+            ImageFont.truetype(p, 32)
+            good.append(p)
+        except Exception:
+            pass
+    # prefer a few known Latin families for a diverse-but-bounded pool; fall back
+    # to whatever loaded so the pool is never empty on a box that has any font.
+    pref = [p for p in good if any(f in p.lower() for f in (
+        'dejavu', 'liberation', 'notosans-', 'notoserif-', 'arial', 'times',
+        'calibri', 'segoeui', 'verdana', 'tahoma', 'georgia'))]
+    pool = pref or good
+    noto = [p for p in pool if 'noto' in p.lower()]
+    base = [p for p in pool if 'noto' not in p.lower()]
     random.Random(0).shuffle(noto)
     return base + noto[:16]
 

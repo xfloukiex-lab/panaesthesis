@@ -184,9 +184,6 @@ class Panaesthesis:
         head.pack(fill="x", padx=26, pady=(18, 10))
         tk.Label(head, text="Panaesthesis", bg=PAPER, fg=INK,
                  font=("Georgia", 21)).grid(row=0, column=0, sticky="w")
-        tk.Label(head, text="What an AI looks like while it thinks", bg=PAPER,
-                 fg=SUB, font=("Georgia", 10, "italic")).grid(row=1, column=0,
-                                                              sticky="w")
         head.columnconfigure(1, weight=1)
         status = tk.Frame(head, bg=PAPER)
         status.grid(row=0, column=2, rowspan=2, sticky="e")

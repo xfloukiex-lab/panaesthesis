@@ -8,7 +8,7 @@ from hodos_monitor import (cli, compare, equations, family, field, intervene,
                            live, models, monitor, portrait, runspec, sites,
                            stimuli, weave)
 
-__version__ = "0.14.2"
+__version__ = "0.14.3"
 __all__ = ["cli", "compare", "equations", "family", "field", "intervene",
            "live", "models", "monitor", "portrait", "runspec", "sites",
            "stimuli", "weave"]
